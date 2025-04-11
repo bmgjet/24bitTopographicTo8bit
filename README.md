@@ -36,7 +36,7 @@ This tool allows you to convert a 24-bit RGB topographic height map to an 8-bit 
 
 ## Download
 
-You can find the latest downloadable release of the tool in the `bin/release` folder of the repository.
+You can find the latest downloadable release of the tool in the `24bitTopographicTo8bit/bin/release` folder of the repository.
 
 ---
 
