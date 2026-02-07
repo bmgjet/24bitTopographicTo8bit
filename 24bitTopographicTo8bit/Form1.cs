@@ -1,282 +1,257 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using System.Windows.Forms;
-
 
 namespace _24bitTopographicTo8bit
 {
     public partial class Form1 : Form
     {
-        public Form1(){InitializeComponent();}
-        public static bool Running = false;
-        public static Bitmap MainImage;
-        public static Bitmap Preview;
-        static Color[] scale = new Color[]
-         {
-        ColorTranslator.FromHtml("#EAC7C8"), // Highest
-        ColorTranslator.FromHtml("#EC867E"),
-        ColorTranslator.FromHtml("#E6B879"),
-        ColorTranslator.FromHtml("#EBDE7D"),
-        ColorTranslator.FromHtml("#99EA7F"),
-        ColorTranslator.FromHtml("#79EBA8"),
-        ColorTranslator.FromHtml("#79E9E9"),
-        ColorTranslator.FromHtml("#79CFEC")  // Lowest
-         };
+        public Form1() { InitializeComponent(); }
 
-        public static Bitmap ResizeBitmap(Bitmap original, int width, int height)
-        {
-            Bitmap resized = new Bitmap(width, height);
-            using (Graphics graphics = Graphics.FromImage(resized))
-            {
-                graphics.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighQuality;
-                graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-                graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighQuality;
-                graphics.DrawImage(original, 0, 0, width, height);
-            }
-            return resized;
-        }
+        private bool IsProcessing = false;
+        private Bitmap MainImage;
+        private Bitmap Preview;
+
+        // The topographical color scale from High to Low
+        private static readonly Color[] Scale = {
+            ColorTranslator.FromHtml("#EAC7C8"),
+            ColorTranslator.FromHtml("#EC867E"),
+            ColorTranslator.FromHtml("#E6B879"),
+            ColorTranslator.FromHtml("#EBDE7D"),
+            ColorTranslator.FromHtml("#99EA7F"),
+            ColorTranslator.FromHtml("#79EBA8"),
+            ColorTranslator.FromHtml("#79E9E9"),
+            ColorTranslator.FromHtml("#79CFEC")
+        };
 
         private void button1_Click(object sender, EventArgs e)
         {
-            OpenFileDialog openFileDialog = new OpenFileDialog
+            using (OpenFileDialog ofd = new OpenFileDialog { Filter = "Images|*.png;*.jpg;*.bmp" })
             {
-                Filter = "Image Files (*.png;*.jpg)|*.png;*.jpg",
-                Title = "Select an Image File",
-                Multiselect = false
-            };
-
-            if (openFileDialog.ShowDialog() == DialogResult.OK)
-            {
-                string selectedFile = openFileDialog.FileName;
-                MainImage = new Bitmap(selectedFile);
-                Preview = ResizeBitmap(MainImage, 256, 256);
-                pictureBox1.BackgroundImage = ScaleImage(trackBar1.Value, Preview);
-                button2.Enabled = true;
-                button3.Enabled = true;
-            }
-        }
-
-        public static Bitmap SmoothCoastline(Bitmap source, byte coastThreshold = 80, int blurRadius = 2)
-        {
-            int width = source.Width;
-            int height = source.Height;
-            int ratio = MainImage.Width / width;
-            coastThreshold = Math.Max((byte)(coastThreshold / ratio), (byte)0);
-            coastThreshold = Math.Min(coastThreshold, (byte)255);
-            blurRadius = blurRadius / ratio;
-            Bitmap result = new Bitmap(width, height);
-            for (int y = 0; y < height; y++)
-            {
-                for (int x = 0; x < width; x++)
+                if (ofd.ShowDialog() == DialogResult.OK)
                 {
-                    Color centerColor = source.GetPixel(x, y);
-                    byte centerBrightness = centerColor.R;
-                    if (centerBrightness <= coastThreshold)
-                    {
-                        int total = 0;
-                        int count = 0;
-                        for (int dy = -blurRadius; dy <= blurRadius; dy++)
-                        {
-                            for (int dx = -blurRadius; dx <= blurRadius; dx++)
-                            {
-                                int nx = x + dx;
-                                int ny = y + dy;
-                                if (nx >= 0 && ny >= 0 && nx < width && ny < height)
-                                {
-                                    Color neighbor = source.GetPixel(nx, ny);
-                                    total += neighbor.R;
-                                    count++;
-                                }
-                            }
-                        }
-                        byte blurred = (byte)(total / count);
-                        result.SetPixel(x, y, Color.FromArgb(blurred, blurred, blurred));
-                    }
-                    else
-                    {
-                        result.SetPixel(x, y, centerColor); // leave highlands untouched
-                    }
+                    MainImage?.Dispose();
+                    Preview?.Dispose();
+                    MainImage = new Bitmap(ofd.FileName);
+                    Preview = ResizeBitmap(MainImage, 512, 512);
+                    UpdatePreview();
+                    button2.Enabled = button3.Enabled = true;
                 }
             }
-            return result;
         }
 
-        private Bitmap ScaleImage(int scale, Bitmap inputimg)
+        private async void button2_Click(object sender, EventArgs e)
         {
-            if (inputimg == null) return null;
-            if (MainImage == null) return null;
+            if (MainImage == null || IsProcessing) return;
 
-            if (Running) { return inputimg; }
-            Running = true;
-            int width = inputimg.Width;
-            int height = inputimg.Height;
+            using (SaveFileDialog sfd = new SaveFileDialog { Filter = "PNG|*.png", FileName = "heightmap.png" })
+            {
+                if (sfd.ShowDialog() == DialogResult.OK)
+                {
+                    IsProcessing = true;
+                    button2.Enabled = false; // Disable to prevent double-click
+
+                    // Setup the progress reporter
+                    var progress = new Progress<int>(percent => {
+                        progressBar1.Value = percent;
+                        this.Text = $"Processing: {percent}%";
+                    });
+
+                    int scaleVal = trackBar1.Value;
+                    byte threshold = (byte)trackBar2.Value;
+                    int radius = trackBar3.Value;
+
+                    await Task.Run(() => {
+                        using (Bitmap result = ProcessImage(MainImage, scaleVal, threshold, radius, progress))
+                        {
+                            result.Save(sfd.FileName, ImageFormat.Png);
+                        }
+                    });
+
+                    this.Text = "24bit to 8bit - Complete";
+                    progressBar1.Value = 0;
+                    button2.Enabled = true;
+                    IsProcessing = false;
+                }
+            }
+        }
+
+        private Bitmap ProcessImage(Bitmap input, int scaleContrast, byte coastThreshold, int blurRadius, IProgress<int> progress = null)
+        {
+            int width = input.Width;
+            int height = input.Height;
             Bitmap output = new Bitmap(width, height, PixelFormat.Format8bppIndexed);
-            try
-            {
-                ColorPalette palette = output.Palette;
-                for (int i = 0; i < 256; i++) palette.Entries[i] = Color.FromArgb(i, i, i);
-                output.Palette = palette;
-                BitmapData inData = inputimg.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.ReadOnly, inputimg.PixelFormat);
-                BitmapData outData = output.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.WriteOnly, PixelFormat.Format8bppIndexed);
-                unsafe
-                {
-                    byte* inScan0 = (byte*)inData.Scan0;
-                    byte* outScan0 = (byte*)outData.Scan0;
-                    int inBpp = Image.GetPixelFormatSize(inputimg.PixelFormat) / 8;
-                    int minGray = int.MaxValue;
-                    int maxGray = int.MinValue;
-                    for (int y = 0; y < height; y++)
-                    {
-                        byte* inRow = inScan0 + (y * inData.Stride);
-                        for (int x = 0; x < width; x++)
-                        {
-                            int i = x * inBpp;
-                            Color inputColor = Color.FromArgb(inRow[i + 2], inRow[i + 1], inRow[i + 0]);
-                            int gray = Math.Max(0, Math.Min(255, ElevationToGray(inputColor)));
-                            if (gray < minGray) minGray = gray;
-                            if (gray > maxGray) maxGray = gray;
-                        }
-                        int percent = (int)((y / (float)height) * 50);
-                        this.Invoke(new Action(() => this.Text = $"Processing: {percent}%"));
-                    }
-                    for (int y = 0; y < height; y++)
-                    {
-                        byte* inRow = inScan0 + (y * inData.Stride);
-                        byte* outRow = outScan0 + (y * outData.Stride);
-                        for (int x = 0; x < width; x++)
-                        {
-                            int i = x * inBpp;
-                            Color inputColor = Color.FromArgb(inRow[i + 2], inRow[i + 1], inRow[i + 0]);
-                            int gray = Math.Max(0, Math.Min(255, ElevationToGray(inputColor)));
 
-                            int stretchedGray = (int)((gray - minGray) / (double)(maxGray - minGray) * scale);
-                            outRow[x] = (byte)Math.Max(0, Math.Min(255, stretchedGray));
-                        }
-                        int percent = 50 + (int)((y / (float)height) * 50);
-                        this.Invoke(new Action(() => this.Text = $"Processing: {percent}%"));
+            // Set Grayscale Palette
+            ColorPalette pal = output.Palette;
+            for (int i = 0; i < 256; i++) pal.Entries[i] = Color.FromArgb(i, i, i);
+            output.Palette = pal;
+
+            BitmapData inData = input.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+            BitmapData outData = output.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.WriteOnly, PixelFormat.Format8bppIndexed);
+
+            unsafe
+            {
+                byte* pIn = (byte*)inData.Scan0;
+                byte* pOut = (byte*)outData.Scan0;
+                double contrastMultiplier = scaleContrast / 100.0;
+
+                for (int y = 0; y < height; y++)
+                {
+                    // Update progress every 10 rows to reduce UI overhead
+                    if (progress != null && y % 10 == 0)
+                    {
+                        progress.Report((int)((y / (float)height) * 100));
+                    }
+
+                    byte* rowIn = pIn + (y * inData.Stride);
+                    byte* rowOut = pOut + (y * outData.Stride);
+
+                    for (int x = 0; x < width; x++)
+                    {
+                        int bIdx = x * 3;
+                        Color c = Color.FromArgb(rowIn[bIdx + 2], rowIn[bIdx + 1], rowIn[bIdx]);
+
+                        int gray = ElevationToGray(c);
+                        rowOut[x] = (byte)Math.Max(0, Math.Min(255, gray * contrastMultiplier));
                     }
                 }
-
-                inputimg.UnlockBits(inData);
-                output.UnlockBits(outData);
-                this.Invoke(new Action(() => this.Text = "24bit to 8bit"));
             }
-            catch { }
-            Running = false;
-            return SmoothCoastline(output, (byte)trackBar2.Value,trackBar3.Value);
+
+            input.UnlockBits(inData);
+            output.UnlockBits(outData);
+
+            if (blurRadius > 0)
+            {
+                progress?.Report(95); // Finalizing stage
+                return SmoothCoastline(output, coastThreshold, blurRadius);
+            }
+
+            return output;
         }
 
-        static int ElevationToGray(Color color)
+        private void button3_Click(object sender, EventArgs e) => UpdatePreview();
+
+        private void UpdatePreview()
+        {
+            var processed = ProcessImage(Preview, trackBar1.Value, (byte)trackBar2.Value, trackBar3.Value, null);
+            pictureBox1.BackgroundImage?.Dispose();
+            pictureBox1.BackgroundImage = processed;
+        }
+
+        private static int ElevationToGray(Color color)
         {
             RgbToLab(color, out double l0, out double a0, out double b0);
-
-            int bestIndex = 0;
-            double bestT = 0;
             double minDistance = double.MaxValue;
+            double bestPos = 0;
 
-            for (int i = 0; i < scale.Length - 1; i++)
+            for (int i = 0; i < Scale.Length - 1; i++)
             {
-                RgbToLab(scale[i], out double l1, out double a1, out double b1);
-                RgbToLab(scale[i + 1], out double l2, out double a2, out double b2);
+                RgbToLab(Scale[i], out double l1, out double a1, out double b1);
+                RgbToLab(Scale[i + 1], out double l2, out double a2, out double b2);
 
-                // Vector math in Lab space
-                double[] ab = { l2 - l1, a2 - a1, b2 - b1 };
-                double[] ap = { l0 - l1, a0 - a1, b0 - b1 };
+                // Project point onto line segment in Lab space
+                double dL = l2 - l1; double dA = a2 - a1; double dB = b2 - b1;
+                double t = ((l0 - l1) * dL + (a0 - a1) * dA + (b0 - b1) * dB) / (dL * dL + dA * dA + dB * dB);
+                t = Math.Max(0, Math.Min(1, t));
 
-                double abDotAb = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
-                double apDotAb = ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2];
-                double t = abDotAb == 0 ? 0 : Math.Max(0, Math.Min(1, apDotAb / abDotAb));
-
-                double[] closest = {
-        l1 + ab[0] * t,
-        a1 + ab[1] * t,
-        b1 + ab[2] * t
-    };
-
-                // Calculate the distance from labInput to the closest point
-                double distance = Math.Sqrt(
-                    (l0 - closest[0]) * (l0 - closest[0]) +
-                    (a0 - closest[1]) * (a0 - closest[1]) +
-                    (b0 - closest[2]) * (b0 - closest[2])
-                );
-
-                // Update best match if this one is closer
-                if (distance < minDistance)
-                {
-                    minDistance = distance;
-                    bestIndex = i;
-                    bestT = t;
-                }
-
-
-                double dist = Math.Pow(l0 - closest[0], 2) +
-                              Math.Pow(a0 - closest[1], 2) +
-                              Math.Pow(b0 - closest[2], 2);
+                double dist = Math.Pow(l0 - (l1 + dL * t), 2) + Math.Pow(a0 - (a1 + dA * t), 2) + Math.Pow(b0 - (b1 + dB * t), 2);
 
                 if (dist < minDistance)
                 {
                     minDistance = dist;
-                    bestIndex = i;
-                    bestT = t;
+                    bestPos = i + t;
                 }
             }
 
-            double scalePos = bestIndex + bestT;
-            double gray = 255.0 * (1.0 - (scalePos / (scale.Length - 1)));
-            return (int)Math.Round(gray);
-        }
-        static void RgbToLab(Color color, out double l, out double a, out double bLab)
-        {
-            // Normalize RGB to [0, 1]
-            double r = color.R * 0.00392156862745; // 1 / 255
-            double g = color.G * 0.00392156862745;
-            double b = color.B * 0.00392156862745;
-
-            // sRGB to Linear RGB (gamma correction)
-            r = (r > 0.04045) ? Math.Pow((r + 0.055) * 0.9478672986, 2.4) : r * 0.0773993808;
-            g = (g > 0.04045) ? Math.Pow((g + 0.055) * 0.9478672986, 2.4) : g * 0.0773993808;
-            b = (b > 0.04045) ? Math.Pow((b + 0.055) * 0.9478672986, 2.4) : b * 0.0773993808;
-
-            // Linear RGB to XYZ (D65)
-            double x = r * 0.4124 + g * 0.3576 + b * 0.1805;
-            double y = r * 0.2126 + g * 0.7152 + b * 0.0722;
-            double z = r * 0.0193 + g * 0.1192 + b * 0.9505;
-
-            // Normalize to D65 white point
-            x *= 1.052111060; // 1 / 0.95047
-            z *= 0.918417016; // 1 / 1.08883
-
-            // XYZ to Lab using f(t) function
-            double fx = (x > 0.008856) ? Math.Pow(x, 1.0 / 3.0) : (7.787 * x + 0.1379310345);
-            double fy = (y > 0.008856) ? Math.Pow(y, 1.0 / 3.0) : (7.787 * y + 0.1379310345);
-            double fz = (z > 0.008856) ? Math.Pow(z, 1.0 / 3.0) : (7.787 * z + 0.1379310345);
-
-            l = 116.0 * fy - 16.0;
-            a = 500.0 * (fx - fy);
-            bLab = 200.0 * (fy - fz);
+            return (int)(255 * (1.0 - (bestPos / (Scale.Length - 1))));
         }
 
-        private void button2_Click(object sender, EventArgs e)
+        // Fast Pointer-based Blur for 8bpp
+        public static Bitmap SmoothCoastline(Bitmap source, byte threshold, int radius)
         {
-            using (SaveFileDialog saveDialog = new SaveFileDialog())
+            int w = source.Width;
+            int h = source.Height;
+            Bitmap dest = new Bitmap(w, h, source.PixelFormat);
+            dest.Palette = source.Palette;
+
+            BitmapData srcData = source.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, source.PixelFormat);
+            BitmapData destData = dest.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, source.PixelFormat);
+
+            unsafe
             {
-                saveDialog.Filter = "PNG Image|*.png";
-                saveDialog.Title = "Save an Image File";
-                saveDialog.DefaultExt = "png";
-                saveDialog.AddExtension = true;
-                saveDialog.FileName = "output.png";
+                byte* pSrc = (byte*)srcData.Scan0;
+                byte* pDest = (byte*)destData.Scan0;
 
-                if (saveDialog.ShowDialog() == DialogResult.OK)
+                for (int y = 0; y < h; y++)
                 {
-                    ScaleImage(trackBar1.Value, MainImage).Save(saveDialog.FileName, ImageFormat.Png);
+                    for (int x = 0; x < w; x++)
+                    {
+                        byte center = pSrc[y * srcData.Stride + x];
+                        if (center <= threshold)
+                        {
+                            int sum = 0, count = 0;
+                            for (int ky = -radius; ky <= radius; ky++)
+                            {
+                                int ny = y + ky;
+                                if (ny < 0 || ny >= h) continue;
+                                for (int kx = -radius; kx <= radius; kx++)
+                                {
+                                    int nx = x + kx;
+                                    if (nx >= 0 && nx < w)
+                                    {
+                                        sum += pSrc[ny * srcData.Stride + nx];
+                                        count++;
+                                    }
+                                }
+                            }
+                            pDest[y * destData.Stride + x] = (byte)(sum / count);
+                        }
+                        else { pDest[y * destData.Stride + x] = center; }
+                    }
                 }
             }
+            source.UnlockBits(srcData);
+            dest.UnlockBits(destData);
+            source.Dispose(); // Clean up intermediate
+            return dest;
         }
 
-        private void button3_Click(object sender, EventArgs e)
+        // Standard Resize
+        public static Bitmap ResizeBitmap(Bitmap original, int width, int height)
         {
-            pictureBox1.BackgroundImage = ScaleImage(trackBar1.Value, Preview);
+            Bitmap res = new Bitmap(width, height);
+            using (Graphics g = Graphics.FromImage(res))
+            {
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                g.DrawImage(original, 0, 0, width, height);
+            }
+            return res;
+        }
+
+        // Optimized RGB to Lab
+        static void RgbToLab(Color c, out double l, out double a, out double b)
+        {
+            double r = c.R / 255.0; double g = c.G / 255.0; double bl = c.B / 255.0;
+            r = (r > 0.04045) ? Math.Pow((r + 0.055) / 1.055, 2.4) : r / 12.92;
+            g = (g > 0.04045) ? Math.Pow((g + 0.055) / 1.055, 2.4) : g / 12.92;
+            bl = (bl > 0.04045) ? Math.Pow((bl + 0.055) / 1.055, 2.4) : bl / 12.92;
+
+            double x = (r * 0.4124 + g * 0.3576 + bl * 0.1805) / 0.95047;
+            double y = (r * 0.2126 + g * 0.7152 + bl * 0.0722) / 1.00000;
+            double z = (r * 0.0193 + g * 0.1192 + bl * 0.9505) / 1.08883;
+
+            x = (x > 0.008856) ? Math.Pow(x, 1 / 3.0) : (7.787 * x) + (16 / 116.0);
+            y = (y > 0.008856) ? Math.Pow(y, 1 / 3.0) : (7.787 * y) + (16 / 116.0);
+            z = (z > 0.008856) ? Math.Pow(z, 1 / 3.0) : (7.787 * z) + (16 / 116.0);
+
+            l = (116 * y) - 16;
+            a = 500 * (x - y);
+            b = 200 * (y - z);
         }
     }
 }
